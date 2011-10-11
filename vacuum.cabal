@@ -15,7 +15,7 @@ description:        <http://web.archive.org/web/20100410115820/http://moonpatio.
 
 library
   hs-source-dirs:   src
-  ghc-options:      -O2 -funbox-strict-fields
+  ghc-options:      -funbox-strict-fields
   extensions:       CPP, BangPatterns
   includes:         ghcautoconf.h
   build-depends:    base==4.*, ghc-prim, array,
