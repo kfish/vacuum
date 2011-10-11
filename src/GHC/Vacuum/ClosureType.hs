@@ -2,7 +2,7 @@
 module GHC.Vacuum.ClosureType (
    closureType
   ,ClosureType(..)
-  ,isFun,isThunk
+  ,isFun,isThunk,isCon
 ) where
 
 import GHC.Vacuum.GHC as GHC
@@ -40,6 +40,17 @@ isThunk THUNK_0_2 = True
 isThunk THUNK_STATIC = True
 isThunk THUNK_SELECTOR = True
 isThunk _ = False
+
+isCon :: ClosureType -> Bool
+isCon CONSTR = True
+isCon CONSTR_1_0 = True
+isCon CONSTR_0_1 = True
+isCon CONSTR_2_0 = True
+isCon CONSTR_1_1 = True
+isCon CONSTR_0_2 = True
+isCon CONSTR_STATIC = True
+isCon CONSTR_NOCAF_STATIC = True
+isCon _ = False
 
 ------------------------------------------------
 

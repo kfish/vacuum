@@ -20,7 +20,7 @@ module GHC.Vacuum.GHC.Imports (
   ,module SysTools
   ,module Packages
 --   ,module PackageConfig
-  ,module Distribution.Package
+--   ,module Distribution.Package
   ,module Name
   ,module Module
   ,module IfaceEnv
@@ -31,7 +31,11 @@ module GHC.Vacuum.GHC.Imports (
   ,module Bag
   ,ghciTablesNextToCode
   ,setContext
+  ,stgItblPtrs
 ) where
+
+
+
 
 ------------------------------------------------
 
@@ -43,6 +47,7 @@ import GHC.Exts(Int(..))
 
 import ByteCodeLink
 import ByteCodeItbls as BCI hiding (ptrs)
+import qualified ByteCodeItbls as BCI
 -- import RtClosureInspect hiding (ClosureType)
 import RtClosureInspect as Rt hiding (tipe,ClosureType(..),isFun)
 import CgInfoTbls hiding (infoTable)
@@ -79,3 +84,14 @@ import Bag
   ,isEmptyBag)
 
 ------------------------------------------------
+
+stgItblPtrs = BCI.ptrs
+
+
+
+
+------------------------------------------------
+
+
+
+
