@@ -1,5 +1,5 @@
 name:               vacuum
-version:            0.0.1
+version:            0.0.2
 cabal-version:      >= 1.6
 build-type:         Simple
 license:            BSD3
@@ -20,7 +20,7 @@ library
                     ghc==6.10.1, ghc-prim,
                     array, containers, array,
                     pretty, haskell-src-meta,
-                    Cabal >= 1.6, ghc-paths
+                    Cabal >= 1.6 && < 1.7, ghc-paths
   exposed-modules:  GHC.Vacuum,
                     GHC.Vacuum.ClosureType,
                     GHC.Vacuum.Dot,
