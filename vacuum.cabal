@@ -7,11 +7,11 @@ license-file:       LICENSE
 category:           Debug, GHC
 author:             Matt Morrow
 copyright:          (c) Matt Morrow 2009
-maintainer:         Matt Morrow <morrow@moonpatio.com>
-homepage:           http://moonpatio.com/vacuum/
+maintainer:         Conrad Parker <conrad@metadecks.org>
+homepage:           http://web.archive.org/web/20100410115820/http://moonpatio.com/vacuum/
 stability:          experimental
 synopsis:           Extract graph representations of ghc heap values.
-description:        <http://moonpatio.com/vacuum/>
+description:        <http://web.archive.org/web/20100410115820/http://moonpatio.com/vacuum/>
 
 library
   hs-source-dirs:   src
