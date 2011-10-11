@@ -1,5 +1,5 @@
 name:               vacuum
-version:            0.0.6
+version:            0.0.7
 cabal-version:      >= 1.6
 build-type:         Simple
 license:            LGPL
@@ -18,7 +18,7 @@ library
   ghc-options:      -O2 -fglasgow-exts
   extensions:
   build-depends:    base==4.*,
-                    ghc==6.10.1, ghc-prim,
+                    ghc >= 6.10.1 && <= 6.10.2, ghc-prim,
                     array, containers, array,
                     pretty, haskell-src-meta,
                     Cabal >= 1.6 && < 1.7, ghc-paths
