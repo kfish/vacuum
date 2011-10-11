@@ -99,13 +99,13 @@ nameGraph m = let g = toAdjList m
               in fmap (\(x,xs) -> (pp x, fmap pp xs)) g
 
 data ShowHNode = ShowHNode
-  {showHNode :: HNode -> String
-  ,externHNode :: String}
+  {showHNode   :: Int -> HNode -> String
+  ,externHNode :: Int -> String}
 
 showHNodes :: ShowHNode -> IntMap HNode -> [(String, [String])]
 showHNodes (ShowHNode showN externN) m
   = let g = toAdjList m
-        pp i = maybe externN showN (IM.lookup i m)
+        pp i = maybe (externN i) (showN i) (IM.lookup i m)
     in fmap (\(x,xs) -> (pp x, fmap pp xs)) g
 
 -----------------------------------------------------------------------------
