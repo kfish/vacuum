@@ -1,6 +1,7 @@
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE BangPatterns, UnboxedTuples, MagicHash #-}
 
 {- |
+>
 > ghci> toAdjList $ vacuum (fix (0:))
 > [(0,[1,0]),(1,[])]
 >
@@ -24,15 +25,26 @@
 >
 > ghci> ppDot . nameGraph $ vacuum (fix (0:))
 > digraph g {
-> graph [rankdir=LR, splines=true];
-> node [label="\N", shape=none, fontcolor=blue, fontname=courier];
-> edge [color=black, style=dotted, fontname=courier, arrowname=onormal];
->
->     ":|0" -> {"S#|1",":|0"}
->     "S#|1" -> {}
+>   graph [rankdir=LR, splines=true];
+>   node [label="\N", shape=none, fontcolor=blue, fontname=courier];
+>   edge [color=black, style=dotted, fontname=courier, arrowname=onormal];
+>       ":|0" -> {"S#|1";":|0"}
+>       "S#|1" -> {}
 > }
+>
+> ghci> let a = [0..]
+> ghci> toAdjList $ vacuumLazy a
+> [(0,[])]
+> ghci> take 2 a
+> [0,1]
+> ghci> toAdjList $ vacuumLazy a
+> [(0,[1,2]),(1,[]),(2,[3,4]),(3,[]),(4,[])]
+> ghci> take 3 a
+> [0,1,2]
+> ghci> toAdjList $ vacuumLazy a
+> [(0,[1,2]),(1,[]),(2,[3,4]),(3,[]),(4,[5,6]),(5,[]),(6,[])]
+>
 -}
-
 
 module GHC.Vacuum (
    HNodeId
@@ -79,8 +91,6 @@ import Data.IntMap(IntMap)
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
 import Data.Monoid(Monoid(..))
-import Data.Array.IArray hiding ((!))
-import qualified Data.Array.IArray as A
 import System.IO.Unsafe
 import Control.Monad
 import Control.Applicative
@@ -96,7 +106,7 @@ import System.Mem.StableName
 
 -----------------------------------------------------------------------------
 
--- | Suck up @a@.
+-- | Vacuums the entire reachable heap subgraph rooted at the @a@.
 vacuum :: a -> IntMap HNode
 vacuum a = unsafePerformIO (dump a)
 
@@ -111,11 +121,7 @@ vacuumDebug a = unsafePerformIO (dumpDebug a)
 vacuumTo :: Int -> a -> IntMap HNode
 vacuumTo n a = unsafePerformIO (dumpTo n a)
 
--- | Doesn't really work like you'd want it to.
--- Working on this, but there's a slight chance that getting
--- it to work as one would expect isn't possible given the
--- ever-so small hook that GHC gives us (@unpackClosure#@).
--- (Just so that the possibility of impossibility is stated).
+-- | Doesn't force anything.
 vacuumLazy :: a -> IntMap HNode
 vacuumLazy a = unsafePerformIO (dumpLazy a)
 
@@ -123,7 +129,7 @@ dump :: a -> IO (IntMap HNode)
 dump a = execH (dumpH a)
 
 dumpStream :: a -> IO [(HNodeId, HNode)]
-dumpStream a = streamH (dumpStreamH a)
+dumpStream a = streamH (flip dumpStreamH a)
 
 dumpDebug :: a -> IO (IntMap [(StableName HValue, HNodeId)])
 dumpDebug a = debugH (dumpH a)
@@ -165,13 +171,26 @@ getClosure_ a =
                     | otherwise = Ptr iptr `plusPtr` negate wORD_SIZE
           itab <- peekInfoTab iptr'
           let elems = fromIntegral (itabPtrs itab)
-              ptrs0 = if elems < 1
-                        then []
-                        else dumpArray (Array 0 (elems - 1) elems ptrs)
+              ptrs0 = dumpArray# ptrs 0 elems
               lits = [W# (indexWordArray# nptrs i)
                         | I# i <- [0.. fromIntegral (itabLits itab-1)] ]
-          -- ptrs <- mapM defined ptrs0
-          return (Closure ptrs0 lits itab)
+          case itab of
+              -- follow indirections, because mkStableName follows
+              -- indirections as well.
+              OtherInfo { itabType = tipe }
+                  | tipe == IND || tipe == IND_OLDGEN || tipe == IND_PERM ||
+                    tipe == IND_OLDGEN_PERM || tipe == IND_STATIC ->
+                  case ptrs0 of
+                      (dest : _) -> getClosure_ dest
+              _ -> return (Closure ptrs0 lits itab)
+
+-- using indexArray# makes sure that the HValue is looked up without
+-- evaluating the value itself. This is not possible with Data.Array.!
+dumpArray# :: Array# HValue -> Int -> Int -> [HValue]
+dumpArray# arr# i@(I# i#) l
+    | i >= l = []
+    | otherwise = case indexArray# arr# i# of
+                      (# h #) -> h : dumpArray# arr# (i+1) l
 
 closureType :: a -> IO ClosureType
 closureType a = itabType <$> getInfoTab a
@@ -260,15 +279,26 @@ isJust  _       = False
 
 -- | Walk the reachable heap (sub)graph rooted at @a@,
 -- and collect it as a graph of @HNode@s in @H@'s state.
-dumpH :: a -> H ()
-dumpH a = go =<< rootH a
+vacuumH :: (HValue -> H [HNodeId]) -> a -> H ()
+vacuumH scan a = go =<< rootH a
   where go :: HValue -> H ()
         go a = do
-          ids <- nodeH a
+          ids <- scan a
           case ids of
             [] -> return ()
             _  -> mapM_ go =<< mapM getHVal ids
 
+dumpH :: a -> H ()
+dumpH = vacuumH nodeH
+
+dumpLazyH :: a -> H ()
+dumpLazyH = vacuumH nodeLazyH
+
+dumpStreamH :: Q (Maybe (HNodeId,HNode)) -> a -> H ()
+dumpStreamH q = vacuumH (nodeStreamH q)
+
+-- argh, this one doesn't
+-- quite fit into the pattern
 dumpToH :: Int -> a -> H ()
 dumpToH n _ | n < 1 = return ()
 dumpToH n a = go (n-1) =<< rootH a
@@ -280,133 +310,69 @@ dumpToH n a = go (n-1) =<< rootH a
             [] -> return ()
             _  -> mapM_ (go (n-1)) =<< mapM getHVal ids
 
-dumpStreamH :: a -> Q (Maybe (HNodeId,HNode)) -> H ()
-dumpStreamH a q = do
-  go =<< rootH a
-  where go :: HValue -> H ()
-        go a = do
-          ids <- nodeStreamH q a
-          case ids of
-            [] -> return ()
-            _  -> mapM_ go =<< mapM getHVal ids
-
-dumpLazyH :: a -> H ()
-dumpLazyH !a = go =<< rootH a
-  where go :: HValue -> H ()
-        go a = do
-          ids <- nodeLazyH a
-          case ids of
-            [] -> return ()
-            _  -> mapM_ go =<< mapM getHVal ids
-
--- | Needed since i don't know of a way
--- to go @a -> HValue@ directly (unsafeCoercing
--- directly doesn't work (i tried)).
-data Box a = Box a
-
 -- | Turn the root into an @HValue@ to start off.
 rootH :: a -> H HValue
-rootH a = do
-  let b = Box a
-  c <- io (getClosure $! b)
-  case closPtrs c of
-    [hval] -> io (defined hval)
-    _ -> error "zomg"
+rootH a = return (unsafeCoerce# a)
 
 -- | Add this @HValue@ to the graph, then
 --  add it's successor's not already seen, and
 --  return the @HNodeId@'s of these newly-seen nodes
 --  (which we've added to the graph in @H@'s state).
---  CURRENTLY GHC COERCES UNPOINTED CLOSURES TO
---  @HVALUE@, which means that if we enter (==force/eval)
---  such a closure we'll crash. Also, there's no way
---  to know if the closure we're about to enter is
---  such a closure.
-nodeH :: HValue -> H [HNodeId]
-nodeH a = do
-  clos <- io (getClosure $! a)
-  (i, _) <- getId a
-  let itab = closITab clos
-      ptrs = closPtrs clos
-  ptrs' <- case itabType itab of
-              t | isCon t -> return (avoid (itabCon itab) ptrs)
-                | otherwise -> return ptrs
-  ptrs'' <- io (mapM defined ptrs')
-  xs <- mapM getId ptrs''
+scanNodeH :: (HValue -> H (HNodeId,Closure,[HValue]))
+          -> (HValue -> H (HNodeId, Bool))
+          -> (HNodeId -> HNode -> H ())
+          ->  HValue  -> H [HNodeId]
+scanNodeH getNode getId withNode a = do
+  (i,clos,ptrs) <- getNode a
+  xs <- mapM getId ptrs
   let news = (fmap fst . fst . partition snd) xs
       n    = HNode (fmap fst xs)
                     (closLits clos)
                     (closITab clos)
-  insertG i n
+  withNode i n
   return news
 
-nodeStreamH :: Q (Maybe (HNodeId, HNode)) -> HValue -> H [HNodeId]
-nodeStreamH q a = do
-  clos <- io (getClosure $! a)
-  (i, _) <- getId a
-  let itab = closITab clos
-      ptrs = closPtrs clos
-  ptrs' <- case itabType itab of
-              t | isCon t -> return (avoid (itabCon itab) ptrs)
-                | otherwise -> return ptrs
-  ptrs'' <- io (mapM defined ptrs')
-  xs <- mapM getId ptrs''
-  let news = (fmap fst . fst . partition snd) xs
-      n    = HNode (fmap fst xs)
-                    (closLits clos)
-                    (closITab clos)
-  --insertG i n
-  io (putQ q (Just (i,n)))
-  return news
+nodeH :: HValue -> H [HNodeId]
+nodeH = scanNodeH getNodeH' getId' insertG
 
 nodeLazyH :: HValue -> H [HNodeId]
-nodeLazyH a = do
+nodeLazyH = scanNodeH getNodeH getId insertG
+
+nodeStreamH :: Q (Maybe (HNodeId, HNode)) -> HValue -> H [HNodeId]
+nodeStreamH q = scanNodeH getNodeH' getId'
+            (\i n -> io (putQ q (Just (i,n))))
+
+getNodeH :: HValue -> H (HNodeId, Closure, [HValue])
+getNodeH a = do
   clos <- io (getClosure a)
   (i, _) <- getId a
   let itab = closITab clos
       ptrs = closPtrs clos
-  ptrs' <- case itabType itab of
-              t | isCon t -> return (avoid (itabCon itab) ptrs)
-                  -- IMPORTANT: Following any of the pointer(s)
-                  -- inside a @THUNK@ results in the chop (aka segfault).
-                | isThunk t -> return []
-                | otherwise -> return ptrs
-  xs <- mapM getIdLazy ptrs'
-  let news = (fmap fst . fst . partition snd) xs
-      n    = HNode (fmap fst xs)
-                    (closLits clos)
-                    (closITab clos)
-  insertG i n
-  return news
+  case itabType itab of
+    t   -- IMPORTANT: Following any of the pointer(s)
+        -- inside a @THUNK@ results in the chop (aka segfault).
+      | isThunk t -> return (i,clos,[])
+      | otherwise -> return (i,clos,ptrs)
 
-------------------------------------------------
-
--- XXXXXX: USE A TRIE FOR THIS INSTEAD
-
--- XXX: hackish casing on conname until unpackClosure# is fixed.
--- Try to cover a few common cases.
-avoid :: String -> [HValue] -> [HValue]
-avoid con = maybe id id (IM.lookup (hash con) criminals)
-
-criminals :: IntMap ([HValue] -> [HValue])
-criminals = IM.fromList . fmap (mapfst hash) $
-  [("J#",               const [])
-  ,("MVar",             const [])
-  ,("STRef",            const [])
-  ,("Array",            take   2)
-  ,("MallocPtr",        const [])
-  ,("PlainPtr",         const [])
-  ,("PS",               drop   1)
-  ,("Chunk",            drop   1)
-  ,("FileHandle",       take   1)
-  ,("DuplexHandle",     take   1)
-  --,("",                 id)
-  ]
+getNodeH' :: HValue -> H (HNodeId, Closure, [HValue])
+getNodeH' a = do
+  clos <- io (getClosure a)
+  let itab = closITab clos
+      ptrs = closPtrs clos
+  case itabType itab of
+    t | isThunk t -> getNodeH' =<< io (defined a)
+      | otherwise -> do
+          (i, _) <- getId a
+          return (i,clos,ptrs)
 
 ------------------------------------------------
 
 getHVal :: HNodeId -> H HValue
-getHVal i = (IM.! i) `fmap` gets hvals
+getHVal i = do
+    -- the following pattern match is important: it evaluates the lookup
+    -- without evaluating x itself
+    Box x <- (IM.! i) `fmap` gets hvals
+    return x
 
 insertG :: HNodeId -> HNode -> H ()
 insertG i n = do
@@ -420,7 +386,7 @@ newId = do
   return n
 
 getId :: HValue -> H (HNodeId, Bool)
-getId hval = hval `seq` do
+getId hval = do
   sn <- io (makeStableName hval)
   let h = hashStableName sn
   s <- gets seen
@@ -430,22 +396,16 @@ getId hval = hval `seq` do
       i <- newId
       vs <- gets hvals
       modify (\e->e{seen= IM.insertWith (++) h [(sn,i)] s
-                   ,hvals= IM.insert i hval vs})
+                   ,hvals= IM.insert i (Box hval) vs})
       return (i, True)
 
-getIdLazy :: HValue -> H (HNodeId, Bool)
-getIdLazy hval = do
-  sn <- io (makeStableName hval)
-  let h = hashStableName sn
-  s <- gets seen
-  case lookup sn =<< IM.lookup h s of
-    Just i -> return (i, False)
-    Nothing -> do
-      i <- newId
-      vs <- gets hvals
-      modify (\e->e{seen= IM.insertWith (++) h [(sn,i)] s
-                   ,hvals= IM.insert i hval vs})
-      return (i, True)
+getId' :: HValue -> H (HNodeId, Bool)
+getId' hval = do
+  clos <- io (getClosure hval)
+  let itab = closITab clos
+  case itabType itab of
+    t | isThunk t -> getId' =<< io (defined hval)
+      | otherwise -> getId hval
 
 ------------------------------------------------
 
@@ -464,7 +424,7 @@ rts/StgMiscClosures.cmm
   |  Ptr | Words  |
   ---------------------------
 
-  These are *unpointed* objects: i.e. they cannot be entered.                           !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  These are *unpointed* objects: i.e. they cannot be entered.
 
   ------------------------------------------------------------------------- */
 
