@@ -30,3 +30,10 @@ library
                     GHC.Vacuum.Util,
                     GHC.Vacuum.Pretty,
                     GHC.Vacuum.Pretty.Dot
+
+------------------------------------------------------------------------
+-- Git repo
+--
+source-repository head
+  type: git
+  location: git://github.com/kfish/vacuum.git
