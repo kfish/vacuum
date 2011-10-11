@@ -1,5 +1,5 @@
 name:               vacuum
-version:            0.0.92
+version:            0.0.93
 cabal-version:      >= 1.6
 build-type:         Simple
 license:            LGPL
