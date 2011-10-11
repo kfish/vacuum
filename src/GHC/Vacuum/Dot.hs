@@ -31,7 +31,7 @@ ppGraph xs = (text "digraph g" <+> text "{")
 
 ppEdge :: (String, [String]) -> Doc
 ppEdge (x,xs) = (dQText x) <+> (text "->")
-                    <+> (braces . hcat . punctuate comma
+                    <+> (braces . hcat . punctuate semi
                         . fmap dQText $ xs)
 
 dQText :: String -> Doc
