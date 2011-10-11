@@ -2,7 +2,7 @@
 module GHC.Vacuum.Dot (
    graphToDot
   ,ppGraph,ppEdge,gStyle
-  ,Doc,text,render
+--   ,Doc,text,render
 ) where
 
 import Text.PrettyPrint
@@ -18,16 +18,16 @@ graphToDot f = ppGraph . fmap (f *** fmap f)
 
 gStyle :: String
 gStyle = unlines
-  ["graph [rankdir=LR, splines=true];"
-  ,"node [label=\"\\N\", shape=none, fontcolor=blue, fontname=courier];"
-  ,"edge [color=black, style=dotted, fontname=courier, arrowname=onormal];"]
+  ["  graph [rankdir=LR, splines=true];"
+  ,"  node [label=\"\\N\", shape=none, fontcolor=blue, fontname=courier];"
+  ,"  edge [color=black, style=dotted, fontname=courier, arrowname=onormal];"]
 
 ppGraph :: [(String, [String])] -> Doc
 ppGraph xs = (text "digraph g" <+> text "{")
               $+$ text gStyle
                 $+$ nest indent (vcat . fmap ppEdge $ xs)
                     $+$ text "}"
-                        where indent = 4
+                        where indent = 2
 
 ppEdge :: (String, [String]) -> Doc
 ppEdge (x,xs) = (dQText x) <+> (text "->")
