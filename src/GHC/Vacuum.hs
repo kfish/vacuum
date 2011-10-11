@@ -98,7 +98,7 @@ import Control.Exception
 import Prelude hiding(catch)
 import Control.Concurrent
 
-import Foreign
+import Foreign hiding (unsafePerformIO)
 import GHC.Arr(Array(..))
 import GHC.Exts
 
