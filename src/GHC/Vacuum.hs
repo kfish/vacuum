@@ -50,11 +50,11 @@ module GHC.Vacuum (
   ,getClosure
   ,nodePkg,nodeMod
   ,nodeName,itabName
-  ,getInfoPtr
 ) where
+import Prelude hiding(catch)
 import GHC.Vacuum.Dot as Dot
 import GHC.Vacuum.ClosureType
-import GHC.Vacuum.GHC as GHC hiding (Closure)
+import GHC.Vacuum.GHC as GHC hiding(Closure)
 import Data.Char
 import Data.Word
 import Data.List
@@ -68,6 +68,7 @@ import System.IO.Unsafe
 import Control.Monad
 import Data.Bits
 import Language.Haskell.Meta.Utils(pretty)
+import Control.Exception
 
 import Foreign
 import GHC.Arr(Array(..))
@@ -75,7 +76,7 @@ import GHC.Exts
 
 -----------------------------------------------------------------------------
 
--- | .
+-- | Suck up @a@.
 vacuum :: a -> IntMap HNode
 vacuum a = unsafePerformIO (dump a)
 
@@ -88,10 +89,6 @@ dump a = execH (dumpH a)
 
 dumpTo :: Int -> a -> IO (IntMap HNode)
 dumpTo n a = execH (dumpToH n a)
-
-
-
-
 
 -----------------------------------------------------------------------------
 
@@ -232,9 +229,19 @@ getInfoPtr a = let b = a `seq` Box a
                               | otherwise -> Ptr iptr `plusPtr`
                                               negate wORD_SIZE
 
+-- | Turn @undefined@ into the the exception value it throws.
+defined :: HValue -> IO HValue
+defined a = grab (return $! a) (return . unsafeCoerce#)
+
+grab :: IO a -> (SomeException -> IO a) -> IO a
+grab = catch
+
 -- | This is in part borrowed from @RtClosureInspect.getClosureData@.
 getClosure :: a -> IO Closure
-getClosure a = a `seq`
+getClosure a = grab (getClosure_ a) getClosure
+
+getClosure_ :: a -> IO Closure
+getClosure_ a = a `seq`
   case unpackClosure# a of
       (# iptr
         ,ptrs
@@ -248,12 +255,13 @@ getClosure a = a `seq`
                         -- !ghciTablesNextToCode, so we must adjust here.
           itab <- peekInfoTab iptr'
           let elems = fromIntegral (itabPtrs itab)
-              ptrsList = if elems < 1
-                            then []
-                            else dumpArray (Array 0 (elems - 1) elems ptrs)
+              ptrs0 = if elems < 1
+                        then []
+                        else dumpArray (Array 0 (elems - 1) elems ptrs)
               lits = [W# (indexWordArray# nptrs i)
                         | I# i <- [0.. fromIntegral (itabLits itab)] ]
-          return (Closure ptrsList lits itab)
+          ptrs <- mapM defined ptrs0
+          return (Closure ptrs lits itab)
 
 peekInfoTab :: Ptr StgInfoTable -> IO InfoTab
 peekInfoTab p = do
@@ -334,11 +342,11 @@ data Box a = Box a
 
 -- | Turn the root into an @HValue@ to start off.
 rootH :: a -> H HValue
-rootH a = let b = a `seq` Box a
+rootH a = let b = Box a
           in b `seq` do
             c <- io (getClosureData b)
             case dumpArray (GHC.ptrs c) of
-              [hval] -> return hval
+              [hval] -> io (defined hval)
               _ -> error "zomg"
 
 -- | Add this @HValue@ to the graph, then
