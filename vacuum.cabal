@@ -19,7 +19,7 @@ library
   extensions:       CPP, BangPatterns
   includes:         ghcautoconf.h
   build-depends:    base==4.*, ghc-prim, array,
-                    containers, pretty
+                    containers, graphviz == 2999.12.*
                     -- haskell-src-meta
 
   exposed-modules:  GHC.Vacuum,
