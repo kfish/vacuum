@@ -1,6 +1,5 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 
-
 module GHC.Vacuum.Types (
    module GHC.Vacuum.Types
 ) where
@@ -97,4 +96,3 @@ emptyEnv = Env
   ,graph = mempty}
 
 ------------------------------------------------
-

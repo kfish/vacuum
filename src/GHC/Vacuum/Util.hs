@@ -1,6 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
 
-
 module GHC.Vacuum.Util (
    module GHC.Vacuum.Util
 ) where
@@ -80,6 +79,3 @@ i2p (I# n#) = Ptr (int2Addr# n#)
 -}
 
 ------------------------------------------------
-
-
-

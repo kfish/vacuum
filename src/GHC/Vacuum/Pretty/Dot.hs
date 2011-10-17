@@ -1,4 +1,3 @@
-
 module GHC.Vacuum.Pretty.Dot (
    graphToDot
   ,ppGraph,ppEdge,gStyle

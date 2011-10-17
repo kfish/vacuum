@@ -74,7 +74,6 @@ module GHC.Vacuum (
   --,module GHC.Vacuum.Q
 ) where
 
-
 import GHC.Vacuum.Q
 import GHC.Vacuum.Util
 import GHC.Vacuum.Types
@@ -510,5 +509,3 @@ for2:
 }
 
 -}
-
-

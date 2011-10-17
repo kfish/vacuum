@@ -98,7 +98,6 @@ getQContents q = do
   as <- unsafeInterleaveIO (getQContents q)
   return (a:as)
 
-
 takeWhileQ :: (a -> Bool) -> Q a -> IO [a]
 takeWhileQ p q = do
   a <- takeQ q
@@ -108,11 +107,4 @@ takeWhileQ p q = do
       as <- unsafeInterleaveIO (takeWhileQ p q)
       return (a:as)
 
-
-
-
-
 ------------------------------------------------
-
-
-

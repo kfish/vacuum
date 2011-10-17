@@ -1,6 +1,3 @@
-
-
-
 module GHC.Vacuum.Pretty (
    module GHC.Vacuum.Pretty
   ,module GHC.Vacuum.Pretty.Dot
@@ -19,7 +16,6 @@ import GHC.Vacuum.Types
 import GHC.Vacuum.Pretty.Dot
 
 -----------------------------------------------------------------------------
-
 
 toAdjPair :: (HNodeId, HNode) -> (Int, [Int])
 toAdjPair = mapsnd nodePtrs
@@ -95,14 +91,3 @@ split f = flip IM.foldWithKey mempty (\i a m ->
                       ps)
 
 -----------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-

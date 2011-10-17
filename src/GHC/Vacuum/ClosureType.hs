@@ -1,4 +1,3 @@
-
 module GHC.Vacuum.ClosureType (
    isFun,isThunk,isCon
   ,ClosureType(..)
@@ -262,10 +261,4 @@ instance Enum ClosureType where
   toEnum 71 = CATCH_STM_FRAME
   toEnum 72 = WHITEHOLE
   toEnum n  = error ("toEnum: ClosureType: invalid ClosureType: " ++ show n)
-
-
-
-
-
-
 
