@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 
 {- |
 > ghci> toAdjList $ vacuum (fix (0:))
@@ -36,8 +37,8 @@ module GHC.Vacuum (
    HNodeId
   ,HNode(..)
   ,emptyHNode
-  ,vacuum,dump
-  ,vacuumTo,dumpTo
+  ,vacuum,vacuumTo,vacuumLazy
+  ,dump,dumpTo,dumpLazy
   ,toAdjList
   ,nameGraph
   ,ShowHNode(..)
@@ -48,13 +49,19 @@ module GHC.Vacuum (
   ,Closure(..)
   ,InfoTab(..)
   ,getClosure
+  ,closureType
+  ,getInfoTab
+  ,getInfoPtr
+  ,peekInfoTab
   ,nodePkg,nodeMod
   ,nodeName,itabName
+  ,HValue
 ) where
+
 import Prelude hiding(catch)
 import GHC.Vacuum.Dot as Dot
 import GHC.Vacuum.ClosureType
-import GHC.Vacuum.GHC as GHC hiding(Closure)
+import GHC.Vacuum.Internal as GHC
 import Data.Char
 import Data.Word
 import Data.List
@@ -67,7 +74,9 @@ import Data.Array.IArray
 import System.IO.Unsafe
 import Control.Monad
 import Data.Bits
+import Text.PrettyPrint(Doc,text)
 import Language.Haskell.Meta.Utils(pretty)
+import Control.Applicative
 import Control.Exception
 
 import Foreign
@@ -84,11 +93,22 @@ vacuum a = unsafePerformIO (dump a)
 vacuumTo :: Int -> a -> IntMap HNode
 vacuumTo n a = unsafePerformIO (dumpTo n a)
 
+-- | Doesn't really work like you'd want it to.
+-- Working on this, but there's a slight chance that getting
+-- it to work as one would expect isn't possible given the
+-- ever-so small hook that GHC gives us (@unpackClosure#@).
+-- (Just so that the possibility of impossibility is stated).
+vacuumLazy :: a -> IntMap HNode
+vacuumLazy a = unsafePerformIO (dumpLazy a)
+
 dump :: a -> IO (IntMap HNode)
 dump a = execH (dumpH a)
 
 dumpTo :: Int -> a -> IO (IntMap HNode)
 dumpTo n a = execH (dumpToH n a)
+
+dumpLazy :: a -> IO (IntMap HNode)
+dumpLazy a = execH (dumpLazyH a)
 
 -----------------------------------------------------------------------------
 
@@ -241,7 +261,7 @@ getClosure :: a -> IO Closure
 getClosure a = grab (getClosure_ a) getClosure
 
 getClosure_ :: a -> IO Closure
-getClosure_ a = a `seq`
+getClosure_ a =
   case unpackClosure# a of
       (# iptr
         ,ptrs
@@ -259,31 +279,65 @@ getClosure_ a = a `seq`
                         then []
                         else dumpArray (Array 0 (elems - 1) elems ptrs)
               lits = [W# (indexWordArray# nptrs i)
-                        | I# i <- [0.. fromIntegral (itabLits itab)] ]
-          ptrs <- mapM defined ptrs0
-          return (Closure ptrs lits itab)
+                        | I# i <- [0.. fromIntegral (itabLits itab-1)] ]
+          -- ptrs <- mapM defined ptrs0
+          return (Closure ptrs0 lits itab)
+
+closureType :: a -> IO ClosureType
+closureType a = itabType <$> getInfoTab a
+
+getInfoTab :: a -> IO InfoTab
+getInfoTab a =
+  case unpackClosure# a of
+    (# iptr
+      ,_
+      ,_ #) -> do
+        let iptr' | ghciTablesNextToCode = Ptr iptr
+                  | otherwise = Ptr iptr `plusPtr` negate wORD_SIZE
+                      -- the info pointer we get back from unpackClosure#
+                      -- is to the beginning of the standard info table,
+                      -- but the Storable instance for info tables takes
+                      -- into account the extra entry pointer when
+                      -- !ghciTablesNextToCode, so we must adjust here.
+        peekInfoTab iptr'
+
 
 peekInfoTab :: Ptr StgInfoTable -> IO InfoTab
 peekInfoTab p = do
   stg <- peek p
   let ct = (toEnum . fromIntegral . GHC.tipe) stg
   case ct of
-    _ | isCon ct -> do (a,b,c) <- dataConInfoPtrToNames (castPtr p)
-                       return $ ConInfo
-                        {itabPkg    = a
-                        ,itabMod    = b
-                        ,itabCon    = c
-                        ,itabPtrs   = (fromIntegral . GHC.stgItblPtrs) stg
-                        ,itabLits   = (fromIntegral . GHC.nptrs) stg
-                        ,itabType   = ct
-                        ,itabSrtLen = fromIntegral (GHC.srtlen stg)
-                        ,itabCode   = fmap fromIntegral (GHC.code stg)}
+    _ | hasName stg -> do (a,b,c) <- dataConInfoPtrToNames (castPtr p)
+                          return $ ConInfo
+                            {itabPkg    = a
+                            ,itabMod    = b
+                            ,itabCon    = c
+                            ,itabPtrs   = (fromIntegral . GHC.ptrs) stg
+                            ,itabLits   = (fromIntegral . GHC.nptrs) stg
+                            ,itabType   = ct
+                            ,itabSrtLen = fromIntegral (GHC.srtlen stg)
+                            ,itabCode   = fmap fromIntegral (GHC.code stg)}
     _ -> return $ OtherInfo
-          {itabPtrs   = (fromIntegral . GHC.stgItblPtrs) stg
+          {itabPtrs   = (fromIntegral . GHC.ptrs) stg
           ,itabLits   = (fromIntegral . GHC.nptrs) stg
           ,itabType   = ct
           ,itabSrtLen = fromIntegral (GHC.srtlen stg)
           ,itabCode   = fmap fromIntegral (GHC.code stg)}
+
+
+-- Check whether this closure is a datacon and sanity check
+-- to make sure we didn't read garbage from memory into this
+-- StgInfoTable (because if we did, we'll probably segfault
+--  during dataConInfoPtrToNames).
+hasName :: StgInfoTable -> Bool
+hasName stg = let ct = (toEnum . fromIntegral . GHC.tipe) stg :: ClosureType
+                  lits = (fromIntegral . GHC.nptrs) stg       :: Int
+                  ptrs = (fromIntegral . GHC.ptrs) stg :: Int
+              in  isCon ct
+                && lits < 1024  -- It seems the ptrs info the ItblEnv
+                && ptrs < 1024  -- gotten from ByteCodeItbls are borked
+                                -- in some way, *OR* (and more likely)
+                                -- there's some caveat i'm not aware of.
 
 ------------------------------------------------
 
@@ -317,23 +371,31 @@ emptyEnv = Env
 dumpH :: a -> H ()
 dumpH a = go =<< rootH a
   where go :: HValue -> H ()
-        go a = a `seq` do
+        go a = do
           ids <- nodeH a
           case ids of
             [] -> return ()
             _  -> mapM_ go =<< mapM getHVal ids
-
 
 dumpToH :: Int -> a -> H ()
 dumpToH n _ | n < 1 = return ()
 dumpToH n a = go (n-1) =<< rootH a
   where go :: Int -> HValue -> H ()
         go 0 _ = return ()
-        go n a = a `seq` do
+        go n a = do
           ids <- nodeH a
           case ids of
             [] -> return ()
             _  -> mapM_ (go (n-1)) =<< mapM getHVal ids
+
+dumpLazyH :: a -> H ()
+dumpLazyH !a = go =<< rootH a
+  where go :: HValue -> H ()
+        go a = do
+          ids <- nodeLazyH a
+          case ids of
+            [] -> return ()
+            _  -> mapM_ go =<< mapM getHVal ids
 
 -- | Needed since i don't know of a way
 -- to go @a -> HValue@ directly (unsafeCoercing
@@ -342,12 +404,12 @@ data Box a = Box a
 
 -- | Turn the root into an @HValue@ to start off.
 rootH :: a -> H HValue
-rootH a = let b = Box a
-          in b `seq` do
-            c <- io (getClosureData b)
-            case dumpArray (GHC.ptrs c) of
-              [hval] -> io (defined hval)
-              _ -> error "zomg"
+rootH a = do
+  let b = Box a
+  c <- io (getClosure $! b)
+  case closPtrs c of
+    [hval] -> io (defined hval)
+    _ -> error "zomg"
 
 -- | Add this @HValue@ to the graph, then
 --  add it's successor's not already seen, and
@@ -358,33 +420,97 @@ rootH a = let b = Box a
 --  unpointed closures cannot be entered, which HValues
 --  can.
 nodeH :: HValue -> H [HNodeId]
-nodeH a = a `seq` do
-  clos <- io (getClosure a)
+nodeH a = do
+  clos <- io (getClosure $! a)
   (i, _) <- getId a
   let itab = closITab clos
       ptrs = closPtrs clos
   ptrs' <- case itabType itab of
-              t | isCon t -> -- XXX: hackish casing on conname until unpackClosure# is fixed.
-                             -- Try to cover a few common cases.
-                            case itabCon itab of
-                              "J#"    -> return []            -- avoid the ByteArray#
-                              "MVar"  -> return []            -- avoid the MVar#
-                              "STRef" -> return []            -- avoid the MutVar#
-                              "Array" -> return (take 2 ptrs) -- avoid the Array#
-                              "MallocPtr" -> return []            -- ForeignPtr
-                              "PlainPtr" -> return []             -- ForeignPtr
-                              "STRef"     -> return []            -- avoid the MutVar#
-                              "PS"        -> return (drop 1 ptrs)
-                              "Chunk"     -> return (drop 1 ptrs)
-                              _       -> return ptrs
+              t | isCon t -> return (avoid (itabCon itab) ptrs)
                 | otherwise -> return ptrs
-  xs <- mapM getId ptrs'
+  ptrs'' <- io (mapM defined ptrs')
+  xs <- mapM getId ptrs''
   let news = (fmap fst . fst . partition snd) xs
       n    = HNode (fmap fst xs)
                     (closLits clos)
                     (closITab clos)
   insertG i n
   return news
+
+nodeLazyH :: HValue -> H [HNodeId]
+nodeLazyH a = do
+  clos <- io (getClosure a)
+  (i, _) <- getId a
+  let itab = closITab clos
+      ptrs = closPtrs clos
+  ptrs' <- case itabType itab of
+              t | isCon t -> return (avoid (itabCon itab) ptrs)
+                  -- IMPORTANT: Following either (or both) of
+                  -- the pointer inside a @THUNK@ results in a segfault.
+                | isThunk t -> return []
+                | otherwise -> return ptrs
+  xs <- mapM getIdLazy ptrs'
+  let news = (fmap fst . fst . partition snd) xs
+      n    = HNode (fmap fst xs)
+                    (closLits clos)
+                    (closITab clos)
+  insertG i n
+  return news
+
+------------------------------------------------
+
+-- XXXXXX: USE A TRIE FOR THIS INSTEAD
+
+-- XXX: hackish casing on conname until unpackClosure# is fixed.
+-- Try to cover a few common cases.
+avoid :: String -> [HValue] -> [HValue]
+avoid con = maybe id id (IM.lookup (hash con) criminals)
+
+criminals :: IntMap ([HValue] -> [HValue])
+criminals = IM.fromList . fmap (mapfst hash) $
+  [("J#",               const [])
+  ,("MVar",             const [])
+  ,("STRef",            const [])
+  ,("Array",            take   2)
+  ,("MallocPtr",        const [])
+  ,("PlainPtr",         const [])
+  ,("PS",               drop   1)
+  ,("Chunk",            drop   1)
+  ,("FileHandle",       take   1)
+  ,("DuplexHandle",     take   1)
+  --,("",                 id)
+  ]
+
+hash :: String -> Int
+hash [] = 0
+hash  s = go 0 (fmap ord s)
+  where go !h [] = h
+        go !h (n:ns) =
+          let a = (h `shiftL` 4)
+              b = a + n
+              c = b .&. 0xf0000000
+              !d = case c==0 of
+                    False -> let !e = c `shiftR` 24
+                              in b `xor` e
+                    True  -> b
+              !e = complement c
+              !f = d `xor` e
+          in go f ns
+
+{-
+unsigned long
+elfhash(const char *s)
+{
+  unsigned long h=0, g;
+  while (*s){
+    h = (h << 4) + *s++;
+    if((g = h & 0xf0000000))
+      h ^= g >> 24;
+    h &= ~g;
+  }
+  return h;
+}
+-}
 
 ------------------------------------------------
 
@@ -414,6 +540,18 @@ getId hval = hval `seq` do
                    ,hvals= IM.insert i hval vs})
       return (i, True)
 
+getIdLazy :: HValue -> H (HNodeId, Bool)
+getIdLazy hval = do
+  s <- gets seen
+  case lookLazy hval s of
+    Just i -> return (i, False)
+    Nothing -> do
+      i <- newId
+      vs <- gets hvals
+      modify (\e->e{seen=(hval,i):s
+                   ,hvals= IM.insert i hval vs})
+      return (i, True)
+
 ------------------------------------------------
 
 look :: HValue -> [(HValue, a)] -> Maybe a
@@ -425,6 +563,15 @@ look hval ((x,i):xs)
 (.==.) :: HValue -> HValue -> Bool
 a .==. b = a `seq` b `seq`
   (0 /= I# (reallyUnsafePtrEquality# a b))
+
+lookLazy :: HValue -> [(HValue, a)] -> Maybe a
+lookLazy _      [] = Nothing
+lookLazy hval ((x,i):xs)
+  | hval =.= x = Just i
+  | otherwise   = lookLazy hval xs
+
+(=.=) :: HValue -> HValue -> Bool
+a =.= b = (0 /= I# (reallyUnsafePtrEquality# a b))
 
 dumpArray :: Array Int a -> [a]
 dumpArray a = let (m,n) = bounds a
@@ -441,6 +588,7 @@ i2p (I# n#) = Ptr (int2Addr# n#)
 
 ------------------------------------------------
 
+{-
 newtype S s a = S {unS :: forall o. s -> (s -> a -> IO o) -> IO o}
 instance Functor (S s) where
   fmap f (S g) = S (\s k -> g s (\s a -> k s (f a)))
@@ -459,10 +607,11 @@ modify :: (s -> s) -> S s ()
 modify f = S (\s k -> k (f s) ())
 runS :: S s a -> s -> IO (a, s)
 runS (S g) s = g s (\s a -> return (a, s))
+-}
 
 ------------------------------------------------
 
-{- RE: the array entering problem:
+{-
 
 rts/StgMiscClosures.cmm
 
