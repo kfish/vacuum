@@ -353,10 +353,10 @@ rootH a = let b = Box a
 --  add it's successor's not already seen, and
 --  return the @HNodeId@'s of these newly-seen nodes
 --  (which we've added to the graph in @H@'s state).
---  CURRENTLY unpackClosure# ENTERS *_ARR_WORDS
---  (WHICH IT SHOULDN'T, SEE BOTTOM OF THIS FILE)
---  (e.g. BbyteArray#). THIS IS A PROBLEM
---  FOR LARGE INTEGERS, AMONG OTHER THINGS.
+--  CURRENTLY GHC COERCES UNPOINTED CLOSURES TO
+--  @HVALUE@, which is a bug in the sense that
+--  unpointed closures cannot be entered, which HValues
+--  can.
 nodeH :: HValue -> H [HNodeId]
 nodeH a = a `seq` do
   clos <- io (getClosure a)
@@ -371,8 +371,11 @@ nodeH a = a `seq` do
                               "MVar"  -> return []            -- avoid the MVar#
                               "STRef" -> return []            -- avoid the MutVar#
                               "Array" -> return (take 2 ptrs) -- avoid the Array#
-                              "MallocPtr" -> return (drop 1 ptrs) -- ForeignPtr
+                              "MallocPtr" -> return []            -- ForeignPtr
                               "PlainPtr" -> return []             -- ForeignPtr
+                              "IORef"     -> return []            -- avoid the MutVar#
+                              "STRef"     -> return []            -- avoid the MutVar#
+                              "PS"        -> return (drop 1 ptrs)
                               _       -> return ptrs
                 | otherwise -> return ptrs
   xs <- mapM getId ptrs'
@@ -513,7 +516,7 @@ unpackClosurezh_fast
         goto out;
     }
     case THUNK, THUNK_1_0, THUNK_0_1, THUNK_2_0, THUNK_1_1,
-         THUNK_0_2, THUNK_STATIC, AP, PAP, AP_STACK, BCO : {      -- XXXXXXXXXXX: need to check for *ARR_WORDS here too!
+         THUNK_0_2, THUNK_STATIC, AP, PAP, AP_STACK, BCO : {
         ptrs = 0;
         nptrs = 0;
         goto out;
