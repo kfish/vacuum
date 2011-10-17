@@ -24,6 +24,7 @@ module GHC.Vacuum.GHC.Internal (
 
 import GHC.Paths(libdir)
 import GHC.Vacuum.GHC.Imports as Imports
+import Distribution.Package(PackageName(..))
 
 import Data.Char
 import Data.Word

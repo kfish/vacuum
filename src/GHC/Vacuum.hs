@@ -1,24 +1,25 @@
 
 {- |
-> ghci> ppHs . toAdjList $ vacuum (fix (0:))
-> [(0, [1, 0]), (1, [])]
+> ghci> toAdjList $ vacuum (fix (0:))
+> [(0,[1,0]),(1,[])]
 >
 > ghci> ppHs $ vacuum (fix (0:))
 > fromList
 >   [(0,
->     HNode{nodePtrs = [1, 0], nodeLits = [1084647872], nodeTag = 4,
->           nodeIPtr = 1515520,
->           nodeICode =
->             [72, 131, 195, 2, 255, 101, 0, 144, 224, 30, 0, 0, 0, 0, 0, 0],
->           nodeCType = CONSTR_2_0, nodePkg = "ghc-prim",
->           nodeMod = "GHC.Types", nodeName = ":"}),
+>     HNode{nodePtrs = [1, 0], nodeLits = [40425920],
+>           nodeInfo =
+>             ConInfo{itabPkg = "ghc-prim", itabMod = "GHC.Types", itabCon = ":",
+>                     itabPtrs = 2, itabLits = 0, itabType = CONSTR_2_0, itabSrtLen = 1,
+>                     itabCode =
+>                       [72, 131, 195, 2, 255, 101, 0, 144, 224, 30, 0, 0, 0, 0, 0, 0]}}),
 >    (1,
->     HNode{nodePtrs = [], nodeLits = [0, 1084647872], nodeTag = 3,
->           nodeIPtr = 1871952,
->           nodeICode =
->             [72, 255, 195, 255, 101, 0, 102, 144, 152, 0, 0, 0, 0, 0, 0, 0],
->           nodeCType = CONSTR_0_1, nodePkg = "integer",
->           nodeMod = "GHC.Integer.Internals", nodeName = "S#"})]
+>     HNode{nodePtrs = [], nodeLits = [0, 40425920],
+>           nodeInfo =
+>             ConInfo{itabPkg = "integer", itabMod = "GHC.Integer.Internals",
+>                     itabCon = "S#", itabPtrs = 0, itabLits = 1, itabType = CONSTR_0_1,
+>                     itabSrtLen = 0,
+>                     itabCode =
+>                       [72, 255, 195, 255, 101, 0, 102, 144, 152, 0, 0, 0, 0, 0, 0, 0]}})]
 >
 > ghci> ppDot . nameGraph $ vacuum (fix (0:))
 > digraph g {
@@ -36,13 +37,19 @@ module GHC.Vacuum (
   ,HNode(..)
   ,emptyHNode
   ,vacuum,dump
+  ,vacuumTo,dumpTo
   ,toAdjList
   ,nameGraph
   ,ppHs,ppDot
+  ,Closure(..)
+  ,InfoTab(..)
+  ,getClosure
+  ,nodePkg,nodeMod
+  ,nodeName,itabName
 ) where
 import GHC.Vacuum.Dot as Dot
 import GHC.Vacuum.ClosureType
-import GHC.Vacuum.GHC as GHC
+import GHC.Vacuum.GHC as GHC hiding (Closure)
 import Data.Char
 import Data.Word
 import Data.List
@@ -54,7 +61,12 @@ import Data.Monoid(Monoid(..))
 import Data.Array.IArray
 import System.IO.Unsafe
 import Control.Monad
+import Data.Bits
 import Language.Haskell.Meta.Utils(pretty)
+
+import Foreign
+import GHC.Arr(Array(..))
+import GHC.Exts
 
 -----------------------------------------------------------------------------
 
@@ -62,16 +74,29 @@ import Language.Haskell.Meta.Utils(pretty)
 vacuum :: a -> IntMap HNode
 vacuum a = unsafePerformIO (dump a)
 
+-- | Stop after a given depth.
+vacuumTo :: Int -> a -> IntMap HNode
+vacuumTo n a = unsafePerformIO (dumpTo n a)
+
 dump :: a -> IO (IntMap HNode)
 dump a = execH (dumpH a)
+
+dumpTo :: Int -> a -> IO (IntMap HNode)
+dumpTo n a = execH (dumpToH n a)
+
+-----------------------------------------------------------------------------
 
 toAdjList :: IntMap HNode -> [(Int, [Int])]
 toAdjList = fmap (mapsnd nodePtrs) . IM.toList
 
 nameGraph :: IntMap HNode -> [(String, [String])]
 nameGraph m = let g = toAdjList m
-                  pp i = nodeName (m IM.! i) ++ "|" ++ show i
+                  pp i = maybe "..."
+                          (\n -> nodeName n ++ "|" ++ show i)
+                          (IM.lookup i m)
               in fmap (\(x,xs) -> (pp x, fmap pp xs)) g
+
+-----------------------------------------------------------------------------
 
 ppHs :: (Show a) => a -> Doc
 ppHs = text . pretty
@@ -86,28 +111,107 @@ type HNodeId = Int
 data HNode = HNode
   {nodePtrs  :: [HNodeId]
   ,nodeLits  :: [Word]
-  ,nodeTag   ::  Word
-  ,nodeIPtr  ::  Word
-  ,nodeICode :: [Word]
-  ,nodeCType :: ClosureType
-  ,nodePkg   :: String
-  ,nodeMod   :: String
-  ,nodeName  :: String}
+  ,nodeInfo  :: InfoTab}
   deriving(Eq,Ord,Read,Show)
+
+data InfoTab
+  = ConInfo   {itabPkg    :: String
+              ,itabMod    :: String
+              ,itabCon    :: String
+              ,itabPtrs   ::  Word
+              ,itabLits   ::  Word
+              ,itabType   ::  ClosureType
+              ,itabSrtLen ::  Word
+              ,itabCode   :: [Word]}
+  | OtherInfo {itabPtrs   ::  Word
+              ,itabLits   ::  Word
+              ,itabType   ::  ClosureType
+              ,itabSrtLen ::  Word
+              ,itabCode   :: [Word]}
+  deriving(Eq,Ord,Read,Show)
+
+data Closure = Closure
+  {closPtrs :: [HValue]
+  ,closLits :: [Word]
+  ,closITab :: InfoTab}
+  deriving(Show)
+
+-- So we can derive Show for Closure
+instance Show HValue where show _ = "(HValue)"
+
+------------------------------------------------
 
 emptyHNode :: ClosureType -> HNode
 emptyHNode ct = HNode
   {nodePtrs   = []
   ,nodeLits   = []
-  ,nodeTag    = 0
-  ,nodeIPtr   = 0
-  ,nodeICode  = []
-  ,nodeCType  = ct
-  ,nodePkg    = []
-  ,nodeMod    = []
-  ,nodeName   = []}
+  ,nodeInfo   = if isCon ct
+                  then ConInfo [] [] [] 0 0 ct 0 []
+                  else OtherInfo 0 0 ct 0 []}
 
------------------------------------------------------------------------------
+nodePkg   :: HNode -> String
+nodeMod   :: HNode -> String
+nodeName  :: HNode -> String
+nodePkg   = fst3 . itabName . nodeInfo
+nodeMod   = snd3 . itabName . nodeInfo
+nodeName  = trd3 . itabName . nodeInfo
+
+fst3 (x,_,_) = x
+snd3 (_,x,_) = x
+trd3 (_,_,x) = x
+
+itabName :: InfoTab -> (String, String, String)
+itabName i@(ConInfo{}) = (itabPkg i, itabMod i, itabCon i)
+itabName  _            = ([], [], [])
+
+------------------------------------------------
+
+-- | This is in part borrowed from @RtClosureInspect.getClosureData@.
+getClosure :: a -> IO Closure
+getClosure a = a `seq`
+  case unpackClosure# a of
+      (# iptr
+        ,ptrs
+        ,nptrs #) -> do
+          let iptr' | ghciTablesNextToCode = Ptr iptr
+                    | otherwise = Ptr iptr `plusPtr` negate wORD_SIZE
+                        -- the info pointer we get back from unpackClosure#
+                        -- is to the beginning of the standard info table,
+                        -- but the Storable instance for info tables takes
+                        -- into account the extra entry pointer when
+                        -- !ghciTablesNextToCode, so we must adjust here.
+          itab <- peekInfoTab iptr'
+          let elems = fromIntegral (itabPtrs itab)
+              ptrsList = if elems < 1
+                            then []
+                            else dumpArray (Array 0 (elems - 1) elems ptrs)
+              lits = [W# (indexWordArray# nptrs i)
+                        | I# i <- [0.. fromIntegral (itabLits itab)] ]
+          return (Closure ptrsList lits itab)
+
+peekInfoTab :: Ptr StgInfoTable -> IO InfoTab
+peekInfoTab p = do
+  stg <- peek p
+  let ct = (toEnum . fromIntegral . GHC.tipe) stg
+  case ct of
+    _ | isCon ct -> do (a,b,c) <- dataConInfoPtrToNames (castPtr p)
+                       return $ ConInfo
+                        {itabPkg    = a
+                        ,itabMod    = b
+                        ,itabCon    = c
+                        ,itabPtrs   = (fromIntegral . GHC.stgItblPtrs) stg
+                        ,itabLits   = (fromIntegral . GHC.nptrs) stg
+                        ,itabType   = ct
+                        ,itabSrtLen = fromIntegral (GHC.srtlen stg)
+                        ,itabCode   = fmap fromIntegral (GHC.code stg)}
+    _ -> return $ OtherInfo
+          {itabPtrs   = (fromIntegral . GHC.stgItblPtrs) stg
+          ,itabLits   = (fromIntegral . GHC.nptrs) stg
+          ,itabType   = ct
+          ,itabSrtLen = fromIntegral (GHC.srtlen stg)
+          ,itabCode   = fmap fromIntegral (GHC.code stg)}
+
+------------------------------------------------
 
 type H a = S Env a
 
@@ -145,6 +249,18 @@ dumpH a = go =<< rootH a
             [] -> return ()
             _  -> mapM_ go =<< mapM getHVal ids
 
+
+dumpToH :: Int -> a -> H ()
+dumpToH n _ | n < 1 = return ()
+dumpToH n a = go (n-1) =<< rootH a
+  where go :: Int -> HValue -> H ()
+        go 0 _ = return ()
+        go n a = a `seq` do
+          ids <- nodeH a
+          case ids of
+            [] -> return ()
+            _  -> mapM_ (go (n-1)) =<< mapM getHVal ids
+
 -- | Needed since i don't know of a way
 -- to go @a -> HValue@ directly (unsafeCoercing
 -- directly doesn't work (i tried)).
@@ -163,35 +279,33 @@ rootH a = let b = a `seq` Box a
 --  add it's successor's not already seen, and
 --  return the @HNodeId@'s of these newly-seen nodes
 --  (which we've added to the graph in @H@'s state).
---  CURRENTLY CAN'T SEEM TO MANAGE TO NOT ENTER AN
---  ARR_WORDS (e.g. BbyteArray#). THIS IS A PROBLEM
+--  CURRENTLY unpackClosure# ENTERS *_ARR_WORDS
+--  (WHICH IT SHOULDN'T, SEE BOTTOM OF THIS FILE)
+--  (e.g. BbyteArray#). THIS IS A PROBLEM
 --  FOR LARGE INTEGERS, AMONG OTHER THINGS.
 nodeH :: HValue -> H [HNodeId]
 nodeH a = a `seq` do
-  c <- io (getClosureData a)
+  clos <- io (getClosure a)
   (i, _) <- getId a
-  let itab  = infoTable c
-      tag   = (fromIntegral . GHC.tipe) itab
-      ctype = (toEnum . fromIntegral) tag
-  case ctype of
-    -- XXX: i think this isn't necessary for BCOs
-    BCO -> insertG i (emptyHNode BCO) >> return []
-    t | isThunk t -> insertG i (emptyHNode t) >> return []
-    _ -> do
-    (pkg,mod,name) <- case isFun ctype of
-                        False -> io (GHC.dataConInfoPtrToNames (infoPtr c))
-                        True -> return ([],[],[])
-    let iptr  = (fromIntegral . p2i . infoPtr) c
-        ls    = nonPtrs c
-    let icode = (fmap fromIntegral . GHC.code) itab
-    -- XXX: do something better with the thunks than discarding them
---     xs <- io (filterM (\a -> (not . isBadNews) `fmap` closureType a)
---                       (dumpArray (GHC.ptrs c)))
-    ys <- mapM getId (dumpArray (GHC.ptrs c)) -- xs
-    let news = (fmap fst . fst . partition snd) ys
-        n    = HNode (fmap fst ys) ls tag iptr icode ctype pkg mod name
-    insertG i n
-    return news
+  let itab = closITab clos
+      ptrs = closPtrs clos
+  ptrs' <- case itabType itab of
+              t | isCon t -> -- XXX: hackish casing on conname until unpackClosure# is fixed.
+                             -- Try to cover a few common cases.
+                            case itabCon itab of
+                              "J#"    -> return []            -- avoid the ByteArray#
+                              "MVar"  -> return []            -- avoid the MVar#
+                              "STRef" -> return []            -- avoid the MutVar#
+                              "Array" -> return (take 2 ptrs) -- avoid the Array#
+                              _       -> return ptrs
+                | otherwise -> return ptrs
+  xs <- mapM getId ptrs'
+  let news = (fmap fst . fst . partition snd) xs
+      n    = HNode (fmap fst xs)
+                    (closLits clos)
+                    (closITab clos)
+  insertG i n
+  return news
 
 ------------------------------------------------
 
@@ -268,3 +382,107 @@ runS :: S s a -> s -> IO (a, s)
 runS (S g) s = g s (\s a -> return (a, s))
 
 ------------------------------------------------
+
+{- RE: the array entering problem:
+
+rts/StgMiscClosures.cmm
+
+/* ----------------------------------------------------------------------------
+  Arrays
+
+  These come in two basic flavours: arrays of data (StgArrWords) and arrays of
+  pointers (StgArrPtrs).  They all have a similar layout:
+
+  ___________________________
+  | Info | No. of | data....
+  |  Ptr | Words  |
+  ---------------------------
+
+  These are *unpointed* objects: i.e. they cannot be entered.                           !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+  ------------------------------------------------------------------------- */
+
+INFO_TABLE(stg_ARR_WORDS, 0, 0, ARR_WORDS, "ARR_WORDS", "ARR_WORDS")
+{ foreign "C" barf("ARR_WORDS object entered!") never returns; }
+
+INFO_TABLE(stg_MUT_ARR_PTRS_CLEAN, 0, 0, MUT_ARR_PTRS_CLEAN, "MUT_ARR_PTRS_CLEAN", "MUT_ARR_PTRS_CLEAN")
+{ foreign "C" barf("MUT_ARR_PTRS_CLEAN object entered!") never returns; }
+
+INFO_TABLE(stg_MUT_ARR_PTRS_DIRTY, 0, 0, MUT_ARR_PTRS_DIRTY, "MUT_ARR_PTRS_DIRTY", "MUT_ARR_PTRS_DIRTY")
+{ foreign "C" barf("MUT_ARR_PTRS_DIRTY object entered!") never returns; }
+
+INFO_TABLE(stg_MUT_ARR_PTRS_FROZEN, 0, 0, MUT_ARR_PTRS_FROZEN, "MUT_ARR_PTRS_FROZEN", "MUT_ARR_PTRS_FROZEN")
+{ foreign "C" barf("MUT_ARR_PTRS_FROZEN object entered!") never returns; }
+
+INFO_TABLE(stg_MUT_ARR_PTRS_FROZEN0, 0, 0, MUT_ARR_PTRS_FROZEN0, "MUT_ARR_PTRS_FROZEN0", "MUT_ARR_PTRS_FROZEN0")
+{ foreign "C" barf("MUT_ARR_PTRS_FROZEN0 object entered!") never returns; }
+-}
+
+{-
+unpackClosurezh_fast
+{
+/* args: R1 = closure to analyze */
+// TODO: Consider the absence of ptrs or nonptrs as a special case ?
+
+    W_ info, ptrs, nptrs, p, ptrs_arr, nptrs_arr;
+    info  = %GET_STD_INFO(UNTAG(R1));
+
+    // Some closures have non-standard layout, so we omit those here.
+    W_ type;
+    type = TO_W_(%INFO_TYPE(info));
+    switch [0 .. N_CLOSURE_TYPES] type {
+    case THUNK_SELECTOR : {
+        ptrs = 1;
+        nptrs = 0;
+        goto out;
+    }
+    case THUNK, THUNK_1_0, THUNK_0_1, THUNK_2_0, THUNK_1_1,
+         THUNK_0_2, THUNK_STATIC, AP, PAP, AP_STACK, BCO : {      -- XXXXXXXXXXX: need to check for *ARR_WORDS here too!
+        ptrs = 0;
+        nptrs = 0;
+        goto out;
+    }
+    default: {
+        ptrs  = TO_W_(%INFO_PTRS(info));
+        nptrs = TO_W_(%INFO_NPTRS(info));
+        goto out;
+    }}
+out:
+
+    W_ ptrs_arr_sz, nptrs_arr_sz;
+    nptrs_arr_sz = SIZEOF_StgArrWords   + WDS(nptrs);
+    ptrs_arr_sz  = SIZEOF_StgMutArrPtrs + WDS(ptrs);
+
+    ALLOC_PRIM (ptrs_arr_sz + nptrs_arr_sz, R1_PTR, unpackClosurezh_fast);
+
+    W_ clos;
+    clos = UNTAG(R1);
+
+    ptrs_arr  = Hp - nptrs_arr_sz - ptrs_arr_sz + WDS(1);
+    nptrs_arr = Hp - nptrs_arr_sz + WDS(1);
+
+    SET_HDR(ptrs_arr, stg_MUT_ARR_PTRS_FROZEN_info, W_[CCCS]);
+    StgMutArrPtrs_ptrs(ptrs_arr) = ptrs;
+    p = 0;
+for:
+    if(p < ptrs) {
+       W_[ptrs_arr + SIZEOF_StgMutArrPtrs + WDS(p)] = StgClosure_payload(clos,p);
+   p = p + 1;
+   goto for;
+    }
+
+    SET_HDR(nptrs_arr, stg_ARR_WORDS_info, W_[CCCS]);
+    StgArrWords_words(nptrs_arr) = nptrs;
+    p = 0;
+for2:
+    if(p < nptrs) {
+       W_[BYTE_ARR_CTS(nptrs_arr) + WDS(p)] = StgClosure_payload(clos, p+ptrs);
+       p = p + 1;
+   goto for2;
+    }
+    RET_NPP(info, ptrs_arr, nptrs_arr);
+}
+
+-}
+
+
