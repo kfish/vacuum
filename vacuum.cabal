@@ -1,13 +1,14 @@
 name:               vacuum
-version:            0.0.3
+version:            0.0.4
 cabal-version:      >= 1.6
 build-type:         Simple
-license:            BSD3
+license:            LGPL
 license-file:       LICENSE
 category:           Interpreter, GHC
 author:             Matt Morrow
 copyright:          (c) Matt Morrow 2008
 maintainer:         Matt Morrow <morrow@moonpatio.com>
+homepage:           http://moonpatio.com/vacuum/
 stability:          experimental
 synopsis:           Extract graph representations of ghc heap values.
 description:        .
