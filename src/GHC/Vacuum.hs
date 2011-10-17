@@ -373,9 +373,9 @@ nodeH a = a `seq` do
                               "Array" -> return (take 2 ptrs) -- avoid the Array#
                               "MallocPtr" -> return []            -- ForeignPtr
                               "PlainPtr" -> return []             -- ForeignPtr
-                              "IORef"     -> return []            -- avoid the MutVar#
                               "STRef"     -> return []            -- avoid the MutVar#
                               "PS"        -> return (drop 1 ptrs)
+                              "Chunk"     -> return (drop 1 ptrs)
                               _       -> return ptrs
                 | otherwise -> return ptrs
   xs <- mapM getId ptrs'
