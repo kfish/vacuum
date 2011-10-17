@@ -58,6 +58,7 @@ import Language.Haskell.Meta.Utils(pretty)
 
 -----------------------------------------------------------------------------
 
+-- | .
 vacuum :: a -> IntMap HNode
 vacuum a = unsafePerformIO (dump a)
 
