@@ -1,4 +1,4 @@
-
+{-# LANGUAGE BangPatterns #-}
 
 
 module GHC.Vacuum.Util (
@@ -62,11 +62,11 @@ lookLazy hval ((x,i):xs)
 
 (=.=) :: HValue -> HValue -> Bool
 a =.= b = (0 /= I# (reallyUnsafePtrEquality# a b))
--}
 
 dumpArray :: Array Int a -> [a]
 dumpArray a = let (m,n) = bounds a
               in fmap (a A.!) [m..n]
+-}
 
 mapfst f = \(a,b) -> (f a,b)
 mapsnd f = \(a,b) -> (a,f b)

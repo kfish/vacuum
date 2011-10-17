@@ -1,4 +1,4 @@
-
+{-# LANGUAGE TypeSynonymInstances #-}
 
 
 module GHC.Vacuum.Types (
@@ -77,13 +77,16 @@ data Closure = Closure
 -- So we can derive Show for Closure
 instance Show HValue where show _ = "(HValue)"
 
+-- A box for safe deposit of HValues
+data Box a = Box a
+
 ------------------------------------------------
 
 data Env = Env
   {uniq  :: HNodeId
     -- the keys are hashes of StableNames
   ,seen  :: IntMap [(StableName HValue,HNodeId)]
-  ,hvals :: IntMap HValue
+  ,hvals :: IntMap (Box HValue)
   ,graph :: IntMap HNode}
 
 emptyEnv :: Env

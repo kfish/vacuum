@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP, MagicHash, RankNTypes #-}
 
 module GHC.Vacuum.Internal (
    HValue

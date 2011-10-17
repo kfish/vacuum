@@ -17,6 +17,7 @@ isFun FUN_STATIC = True
 isFun _ = False
 
 isThunk :: ClosureType -> Bool
+isThunk AP = True
 isThunk THUNK = True
 isThunk THUNK_1_0 = True
 isThunk THUNK_0_1 = True
