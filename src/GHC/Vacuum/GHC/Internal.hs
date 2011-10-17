@@ -73,7 +73,7 @@ defaultGhcApiConfig = GhcApiCfg
         ,Opt_RankNTypes
         ,Opt_KindSignatures
         ,Opt_UnicodeSyntax
-          -- um, i assume this turn it _off_ (?)
+          -- um, i assume this turns it _off_ (?)
         ,Opt_MonomorphismRestriction
         ,Opt_PatternGuards
         ,Opt_ParallelListComp
@@ -137,7 +137,6 @@ newEnv cfg dflagsM
               return env')
           (maybe defaultDynFlags id dflagsM)
 
--- | Escape this hideous Ghc monad :-)
 myRunGhc :: HscEnv -> Ghc a -> IO a
 myRunGhc hsc_env ghc = do
   wref <- newIORef emptyBag
