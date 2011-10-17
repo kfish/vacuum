@@ -1,5 +1,5 @@
 name:               vacuum
-version:            0.0.94
+version:            0.0.95
 cabal-version:      >= 1.6
 build-type:         Simple
 license:            LGPL
@@ -18,9 +18,15 @@ library
   ghc-options:      -O2 -fglasgow-exts -funbox-strict-fields
   extensions:       CPP, BangPatterns
   includes:         ghcautoconf.h
-  exposed-modules:  GHC.Vacuum,
-                    GHC.Vacuum.Dot,
-                    GHC.Vacuum.ClosureType,
-                    GHC.Vacuum.Internal
   build-depends:    base==4.*, ghc-prim, array,
-                    containers, pretty, haskell-src-meta
+                    containers, pretty
+                    -- haskell-src-meta
+
+  exposed-modules:  GHC.Vacuum,
+                    GHC.Vacuum.ClosureType,
+                    GHC.Vacuum.Internal,
+                    GHC.Vacuum.Q,
+                    GHC.Vacuum.Types,
+                    GHC.Vacuum.Util,
+                    GHC.Vacuum.Pretty,
+                    GHC.Vacuum.Pretty.Dot

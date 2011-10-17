@@ -33,17 +33,20 @@
 > }
 -}
 
+
 module GHC.Vacuum (
    HNodeId
   ,HNode(..)
   ,emptyHNode
-  ,vacuum,vacuumTo,vacuumLazy
+  ,summary
+  ,vacuum,vacuumTo,vacuumLazy,vacuumStream,vacuumDebug
   ,dump,dumpTo,dumpLazy
-  ,toAdjList
+  ,toAdjList,toAdjPair
   ,nameGraph
   ,ShowHNode(..)
   ,showHNodes
-  ,ppHs,ppDot
+  --,ppHs
+  ,ppDot
   ,Draw(..),G(..)
   ,draw,printDraw,split
   ,Closure(..)
@@ -56,38 +59,53 @@ module GHC.Vacuum (
   ,nodePkg,nodeMod
   ,nodeName,itabName
   ,HValue
+  --,module GHC.Vacuum.Q
 ) where
 
-import Prelude hiding(catch)
-import GHC.Vacuum.Dot as Dot
+
+import GHC.Vacuum.Q
+import GHC.Vacuum.Util
+import GHC.Vacuum.Types
+import GHC.Vacuum.Pretty
 import GHC.Vacuum.ClosureType
 import GHC.Vacuum.Internal as GHC
+
+import Data.List
 import Data.Char
 import Data.Word
-import Data.List
+import Data.Bits
 import Data.Map(Map)
 import Data.IntMap(IntMap)
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
 import Data.Monoid(Monoid(..))
-import Data.Array.IArray
+import Data.Array.IArray hiding ((!))
+import qualified Data.Array.IArray as A
 import System.IO.Unsafe
 import Control.Monad
-import Data.Bits
-import Text.PrettyPrint(Doc,text)
-import Language.Haskell.Meta.Utils(pretty)
 import Control.Applicative
 import Control.Exception
+import Prelude hiding(catch)
+import Control.Concurrent
 
 import Foreign
 import GHC.Arr(Array(..))
 import GHC.Exts
+
+import System.Mem.StableName
 
 -----------------------------------------------------------------------------
 
 -- | Suck up @a@.
 vacuum :: a -> IntMap HNode
 vacuum a = unsafePerformIO (dump a)
+
+-- | Returns nodes as it encounters them.
+vacuumStream :: a -> [(HNodeId, HNode)]
+vacuumStream a = unsafePerformIO (dumpStream a)
+
+vacuumDebug :: a -> IntMap [(StableName HValue, HNodeId)]
+vacuumDebug a = unsafePerformIO (dumpDebug a)
 
 -- | Stop after a given depth.
 vacuumTo :: Int -> a -> IntMap HNode
@@ -104,6 +122,12 @@ vacuumLazy a = unsafePerformIO (dumpLazy a)
 dump :: a -> IO (IntMap HNode)
 dump a = execH (dumpH a)
 
+dumpStream :: a -> IO [(HNodeId, HNode)]
+dumpStream a = streamH (dumpStreamH a)
+
+dumpDebug :: a -> IO (IntMap [(StableName HValue, HNodeId)])
+dumpDebug a = debugH (dumpH a)
+
 dumpTo :: Int -> a -> IO (IntMap HNode)
 dumpTo n a = execH (dumpToH n a)
 
@@ -111,135 +135,6 @@ dumpLazy :: a -> IO (IntMap HNode)
 dumpLazy a = execH (dumpLazyH a)
 
 -----------------------------------------------------------------------------
-
-toAdjList :: IntMap HNode -> [(Int, [Int])]
-toAdjList = fmap (mapsnd nodePtrs) . IM.toList
-
-nameGraph :: IntMap HNode -> [(String, [String])]
-nameGraph m = let g = toAdjList m
-                  pp i = maybe "..."
-                          (\n -> nodeName n ++ "|" ++ show i)
-                          (IM.lookup i m)
-              in fmap (\(x,xs) -> (pp x, fmap pp xs)) g
-
-data ShowHNode = ShowHNode
-  {showHNode   :: Int -> HNode -> String
-  ,externHNode :: Int -> String}
-
-showHNodes :: ShowHNode -> IntMap HNode -> [(String, [String])]
-showHNodes (ShowHNode showN externN) m
-  = let g = toAdjList m
-        pp i = maybe (externN i) (showN i) (IM.lookup i m)
-    in fmap (\(x,xs) -> (pp x, fmap pp xs)) g
-
------------------------------------------------------------------------------
-
-ppHs :: (Show a) => a -> Doc
-ppHs = text . pretty
-
-ppDot :: [(String, [String])] -> Doc
-ppDot = Dot.graphToDot id
-
------------------------------------------------------------------------------
-
-type HNodeId = Int
-
-data HNode = HNode
-  {nodePtrs  :: [HNodeId]
-  ,nodeLits  :: [Word]
-  ,nodeInfo  :: InfoTab}
-  deriving(Eq,Ord,Read,Show)
-
-data InfoTab
-  = ConInfo   {itabPkg    :: String
-              ,itabMod    :: String
-              ,itabCon    :: String
-              ,itabPtrs   ::  Word
-              ,itabLits   ::  Word
-              ,itabType   ::  ClosureType
-              ,itabSrtLen ::  Word
-              ,itabCode   :: [Word]}
-  | OtherInfo {itabPtrs   ::  Word
-              ,itabLits   ::  Word
-              ,itabType   ::  ClosureType
-              ,itabSrtLen ::  Word
-              ,itabCode   :: [Word]}
-  deriving(Eq,Ord,Read,Show)
-
-data Closure = Closure
-  {closPtrs :: [HValue]
-  ,closLits :: [Word]
-  ,closITab :: InfoTab}
-  deriving(Show)
-
--- So we can derive Show for Closure
-instance Show HValue where show _ = "(HValue)"
-
-------------------------------------------------
-
--- | To assist in \"rendering\"
---  the graph to some source.
-data Draw e v m a = Draw
-  {mkV   :: Int -> a -> m v
-  ,mkE   :: v -> v -> m e
-  ,succs :: a -> [Int]}
-
-newtype G e v = G {unG :: IntMap (v, IntMap e)}
-  deriving(Eq,Ord,Read,Show)
-
-draw :: (Monad m) => Draw e v m a -> IntMap a -> m (G e v)
-draw (Draw mkV mkE succs) g = do
-  vs <- IM.fromList `liftM` forM (IM.toList g)
-          (\(i,a) -> do v <- mkV i a
-                        return (i,(v,succs a)))
-  (G . IM.fromList) `liftM` forM (IM.toList vs)
-    (\(i,(v,ps)) -> do let us = fmap (vs IM.!) ps
-                       es <- IM.fromList `liftM` forM ps
-                               (\p -> do e <- mkE v (fst (vs IM.! p))
-                                         return (p,e))
-                       return (i,(v,es)))
-
--- | An example @Draw@
-printDraw :: Draw (Int,Int) Int IO HNode
-printDraw = Draw
-  {mkV   = \i _ -> print i >> return i
-  ,mkE   = \u v -> print (u,v) >> return (u,v)
-  ,succs = nodePtrs}
-
--- | Build a map to @(preds,succs)@
-split :: (a -> [Int]) -> IntMap a -> IntMap ([Int],[Int])
-split f = flip IM.foldWithKey mempty (\i a m ->
-            let ps = f a
-            in foldl' (\m p -> IM.insertWith mappend p ([i],[]) m)
-                      (IM.insertWith mappend i ([],ps) m)
-                      ps)
-
-------------------------------------------------
-
-emptyHNode :: ClosureType -> HNode
-emptyHNode ct = HNode
-  {nodePtrs   = []
-  ,nodeLits   = []
-  ,nodeInfo   = if isCon ct
-                  then ConInfo [] [] [] 0 0 ct 0 []
-                  else OtherInfo 0 0 ct 0 []}
-
-nodePkg   :: HNode -> String
-nodeMod   :: HNode -> String
-nodeName  :: HNode -> String
-nodePkg   = fst3 . itabName . nodeInfo
-nodeMod   = snd3 . itabName . nodeInfo
-nodeName  = trd3 . itabName . nodeInfo
-
-fst3 (x,_,_) = x
-snd3 (_,x,_) = x
-trd3 (_,_,x) = x
-
-itabName :: InfoTab -> (String, String, String)
-itabName i@(ConInfo{}) = (itabPkg i, itabMod i, itabCon i)
-itabName  _            = ([], [], [])
-
-------------------------------------------------
 
 getInfoPtr :: a -> Ptr StgInfoTable
 getInfoPtr a = let b = a `seq` Box a
@@ -268,11 +163,6 @@ getClosure_ a =
         ,nptrs #) -> do
           let iptr' | ghciTablesNextToCode = Ptr iptr
                     | otherwise = Ptr iptr `plusPtr` negate wORD_SIZE
-                        -- the info pointer we get back from unpackClosure#
-                        -- is to the beginning of the standard info table,
-                        -- but the Storable instance for info tables takes
-                        -- into account the extra entry pointer when
-                        -- !ghciTablesNextToCode, so we must adjust here.
           itab <- peekInfoTab iptr'
           let elems = fromIntegral (itabPtrs itab)
               ptrs0 = if elems < 1
@@ -294,13 +184,7 @@ getInfoTab a =
       ,_ #) -> do
         let iptr' | ghciTablesNextToCode = Ptr iptr
                   | otherwise = Ptr iptr `plusPtr` negate wORD_SIZE
-                      -- the info pointer we get back from unpackClosure#
-                      -- is to the beginning of the standard info table,
-                      -- but the Storable instance for info tables takes
-                      -- into account the extra entry pointer when
-                      -- !ghciTablesNextToCode, so we must adjust here.
         peekInfoTab iptr'
-
 
 peekInfoTab :: Ptr StgInfoTable -> IO InfoTab
 peekInfoTab p = do
@@ -351,18 +235,26 @@ runH m = do
   (a, s) <- runS m emptyEnv
   return (a, graph s)
 
-data Env = Env
-  {uniq  :: HNodeId
-  ,seen  :: [(HValue, HNodeId)]
-  ,hvals :: IntMap HValue
-  ,graph :: IntMap HNode}
+runH_ :: H a -> IO ()
+runH_ m = do
+  _ <- runS m emptyEnv
+  return ()
 
-emptyEnv :: Env
-emptyEnv = Env
-  {uniq = 0
-  ,seen = []
-  ,hvals = mempty
-  ,graph = mempty}
+debugH :: H a -> IO (IntMap [(StableName HValue,HNodeId)])
+debugH m = (seen . snd) <$> runS m emptyEnv
+
+streamH :: (Q (Maybe a) -> H b) -> IO [a]
+streamH m = do
+  q <- newQ
+  tid <- forkIO (runH_ (m q) `finally` putQ q Nothing)
+  fmap fromJust <$> takeWhileQ isJust q
+
+fromJust :: Maybe a -> a
+fromJust (Just a) = a
+
+isJust :: Maybe a -> Bool
+isJust (Just{}) = True
+isJust  _       = False
 
 ------------------------------------------------
 
@@ -387,6 +279,16 @@ dumpToH n a = go (n-1) =<< rootH a
           case ids of
             [] -> return ()
             _  -> mapM_ (go (n-1)) =<< mapM getHVal ids
+
+dumpStreamH :: a -> Q (Maybe (HNodeId,HNode)) -> H ()
+dumpStreamH a q = do
+  go =<< rootH a
+  where go :: HValue -> H ()
+        go a = do
+          ids <- nodeStreamH q a
+          case ids of
+            [] -> return ()
+            _  -> mapM_ go =<< mapM getHVal ids
 
 dumpLazyH :: a -> H ()
 dumpLazyH !a = go =<< rootH a
@@ -416,9 +318,10 @@ rootH a = do
 --  return the @HNodeId@'s of these newly-seen nodes
 --  (which we've added to the graph in @H@'s state).
 --  CURRENTLY GHC COERCES UNPOINTED CLOSURES TO
---  @HVALUE@, which is a bug in the sense that
---  unpointed closures cannot be entered, which HValues
---  can.
+--  @HVALUE@, which means that if we enter (==force/eval)
+--  such a closure we'll crash. Also, there's no way
+--  to know if the closure we're about to enter is
+--  such a closure.
 nodeH :: HValue -> H [HNodeId]
 nodeH a = do
   clos <- io (getClosure $! a)
@@ -437,6 +340,25 @@ nodeH a = do
   insertG i n
   return news
 
+nodeStreamH :: Q (Maybe (HNodeId, HNode)) -> HValue -> H [HNodeId]
+nodeStreamH q a = do
+  clos <- io (getClosure $! a)
+  (i, _) <- getId a
+  let itab = closITab clos
+      ptrs = closPtrs clos
+  ptrs' <- case itabType itab of
+              t | isCon t -> return (avoid (itabCon itab) ptrs)
+                | otherwise -> return ptrs
+  ptrs'' <- io (mapM defined ptrs')
+  xs <- mapM getId ptrs''
+  let news = (fmap fst . fst . partition snd) xs
+      n    = HNode (fmap fst xs)
+                    (closLits clos)
+                    (closITab clos)
+  --insertG i n
+  io (putQ q (Just (i,n)))
+  return news
+
 nodeLazyH :: HValue -> H [HNodeId]
 nodeLazyH a = do
   clos <- io (getClosure a)
@@ -445,8 +367,8 @@ nodeLazyH a = do
       ptrs = closPtrs clos
   ptrs' <- case itabType itab of
               t | isCon t -> return (avoid (itabCon itab) ptrs)
-                  -- IMPORTANT: Following either (or both) of
-                  -- the pointer inside a @THUNK@ results in a segfault.
+                  -- IMPORTANT: Following any of the pointer(s)
+                  -- inside a @THUNK@ results in the chop (aka segfault).
                 | isThunk t -> return []
                 | otherwise -> return ptrs
   xs <- mapM getIdLazy ptrs'
@@ -481,37 +403,6 @@ criminals = IM.fromList . fmap (mapfst hash) $
   --,("",                 id)
   ]
 
-hash :: String -> Int
-hash [] = 0
-hash  s = go 0 (fmap ord s)
-  where go !h [] = h
-        go !h (n:ns) =
-          let a = (h `shiftL` 4)
-              b = a + n
-              c = b .&. 0xf0000000
-              !d = case c==0 of
-                    False -> let !e = c `shiftR` 24
-                              in b `xor` e
-                    True  -> b
-              !e = complement c
-              !f = d `xor` e
-          in go f ns
-
-{-
-unsigned long
-elfhash(const char *s)
-{
-  unsigned long h=0, g;
-  while (*s){
-    h = (h << 4) + *s++;
-    if((g = h & 0xf0000000))
-      h ^= g >> 24;
-    h &= ~g;
-  }
-  return h;
-}
--}
-
 ------------------------------------------------
 
 getHVal :: HNodeId -> H HValue
@@ -530,84 +421,31 @@ newId = do
 
 getId :: HValue -> H (HNodeId, Bool)
 getId hval = hval `seq` do
+  sn <- io (makeStableName hval)
+  let h = hashStableName sn
   s <- gets seen
-  case look hval s of
+  case lookup sn =<< IM.lookup h s of
     Just i -> return (i, False)
     Nothing -> do
       i <- newId
       vs <- gets hvals
-      modify (\e->e{seen=(hval,i):s
+      modify (\e->e{seen= IM.insertWith (++) h [(sn,i)] s
                    ,hvals= IM.insert i hval vs})
       return (i, True)
 
 getIdLazy :: HValue -> H (HNodeId, Bool)
 getIdLazy hval = do
+  sn <- io (makeStableName hval)
+  let h = hashStableName sn
   s <- gets seen
-  case lookLazy hval s of
+  case lookup sn =<< IM.lookup h s of
     Just i -> return (i, False)
     Nothing -> do
       i <- newId
       vs <- gets hvals
-      modify (\e->e{seen=(hval,i):s
+      modify (\e->e{seen= IM.insertWith (++) h [(sn,i)] s
                    ,hvals= IM.insert i hval vs})
       return (i, True)
-
-------------------------------------------------
-
-look :: HValue -> [(HValue, a)] -> Maybe a
-look _      [] = Nothing
-look hval ((x,i):xs)
-  | hval .==. x = Just i
-  | otherwise   = look hval xs
-
-(.==.) :: HValue -> HValue -> Bool
-a .==. b = a `seq` b `seq`
-  (0 /= I# (reallyUnsafePtrEquality# a b))
-
-lookLazy :: HValue -> [(HValue, a)] -> Maybe a
-lookLazy _      [] = Nothing
-lookLazy hval ((x,i):xs)
-  | hval =.= x = Just i
-  | otherwise   = lookLazy hval xs
-
-(=.=) :: HValue -> HValue -> Bool
-a =.= b = (0 /= I# (reallyUnsafePtrEquality# a b))
-
-dumpArray :: Array Int a -> [a]
-dumpArray a = let (m,n) = bounds a
-              in fmap (a!) [m..n]
-
-mapfst f = \(a,b) -> (f a,b)
-mapsnd f = \(a,b) -> (a,f b)
-f *** g = \(a, b) -> (f a, g b)
-
-p2i :: Ptr a -> Int
-i2p :: Int -> Ptr a
-p2i (Ptr a#) = I# (addr2Int# a#)
-i2p (I# n#) = Ptr (int2Addr# n#)
-
-------------------------------------------------
-
-{-
-newtype S s a = S {unS :: forall o. s -> (s -> a -> IO o) -> IO o}
-instance Functor (S s) where
-  fmap f (S g) = S (\s k -> g s (\s a -> k s (f a)))
-instance Monad (S s) where
-  return a = S (\s k -> k s a)
-  S g >>= f = S (\s k -> g s (\s a -> unS (f a) s k))
-get :: S s s
-get = S (\s k -> k s s)
-gets :: (s -> a) -> S s a
-gets f = S (\s k -> k s (f s))
-set :: s -> S s ()
-set s = S (\_ k -> k s ())
-io :: IO a -> S s a
-io m = S (\s k -> k s =<< m)
-modify :: (s -> s) -> S s ()
-modify f = S (\s k -> k (f s) ())
-runS :: S s a -> s -> IO (a, s)
-runS (S g) s = g s (\s a -> return (a, s))
--}
 
 ------------------------------------------------
 

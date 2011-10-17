@@ -1,5 +1,5 @@
 
-module GHC.Vacuum.Dot (
+module GHC.Vacuum.Pretty.Dot (
    graphToDot
   ,ppGraph,ppEdge,gStyle
 --   ,Doc,text,render
