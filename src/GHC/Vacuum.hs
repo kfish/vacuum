@@ -40,6 +40,8 @@ module GHC.Vacuum (
   ,vacuumTo,dumpTo
   ,toAdjList
   ,nameGraph
+  ,ShowHNode(..)
+  ,showHNodes
   ,ppHs,ppDot
   ,Closure(..)
   ,InfoTab(..)
@@ -95,6 +97,16 @@ nameGraph m = let g = toAdjList m
                           (\n -> nodeName n ++ "|" ++ show i)
                           (IM.lookup i m)
               in fmap (\(x,xs) -> (pp x, fmap pp xs)) g
+
+data ShowHNode = ShowHNode
+  {showHNode :: HNode -> String
+  ,externHNode :: String}
+
+showHNodes :: ShowHNode -> IntMap HNode -> [(String, [String])]
+showHNodes (ShowHNode showN externN) m
+  = let g = toAdjList m
+        pp i = maybe externN showN (IM.lookup i m)
+    in fmap (\(x,xs) -> (pp x, fmap pp xs)) g
 
 -----------------------------------------------------------------------------
 
@@ -297,6 +309,8 @@ nodeH a = a `seq` do
                               "MVar"  -> return []            -- avoid the MVar#
                               "STRef" -> return []            -- avoid the MutVar#
                               "Array" -> return (take 2 ptrs) -- avoid the Array#
+                              "MallocPtr" -> return (drop 1 ptrs) -- ForeignPtr
+                              "PlainPtr" -> return []             -- ForeignPtr
                               _       -> return ptrs
                 | otherwise -> return ptrs
   xs <- mapM getId ptrs'
