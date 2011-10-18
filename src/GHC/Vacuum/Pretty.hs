@@ -7,7 +7,6 @@ import Data.List
 import Data.IntMap(IntMap)
 import Data.Monoid(Monoid(..))
 import qualified Data.IntMap as IM
-import Text.PrettyPrint(Doc,text,render)
 --import Language.Haskell.Meta.Utils(pretty)
 import Control.Monad
 
@@ -39,17 +38,6 @@ showHNodes (ShowHNode showN externN) m
   = let g = toAdjList m
         pp i = maybe (externN i) (showN i) (IM.lookup i m)
     in fmap (\(x,xs) -> (pp x, fmap pp xs)) g
-
------------------------------------------------------------------------------
-
---ppHs :: (Show a) => a -> Doc
---ppHs = text . pretty
-
-ppDot :: [(String, [String])] -> Doc
-ppDot = graphToDot id
-
-renderDot :: [(String, [String])] -> String
-renderDot = render . ppDot
 
 -----------------------------------------------------------------------------
 

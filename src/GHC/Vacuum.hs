@@ -57,8 +57,7 @@ module GHC.Vacuum (
   ,nameGraph
   ,ShowHNode(..)
   ,showHNodes
-  --,ppHs
-  ,ppDot
+  ,graphToDot
   ,Draw(..),G(..)
   ,draw,printDraw,split
   ,Closure(..)
@@ -78,6 +77,7 @@ import GHC.Vacuum.Q
 import GHC.Vacuum.Util
 import GHC.Vacuum.Types
 import GHC.Vacuum.Pretty
+import GHC.Vacuum.Pretty.Dot
 import GHC.Vacuum.ClosureType
 import GHC.Vacuum.Internal as GHC
 
