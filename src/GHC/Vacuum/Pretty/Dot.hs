@@ -1,65 +1,45 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+{- |
+> import GHC.Vacuum.Pretty.Dot
+> import Data.GraphViz.Commands
+> graphToDotPng :: FilePath -> [(String,[String])] -> IO FilePath
+> graphToDotPng fpre g = addExtension (runGraphviz (graphToDot g)) Png fpre
+-}
 module GHC.Vacuum.Pretty.Dot (
    graphToDot
-  ,ppGraph,ppEdge,gStyle
---   ,Doc,text,render
+  ,graphToDotParams
+  ,vacuumParams
 ) where
 
-import Text.PrettyPrint
+import Data.GraphViz hiding (graphToDot)
+import Data.GraphViz.Attributes.Complete( Attribute(RankDir, Splines, FontName)
+                                        , RankDir(FromLeft), EdgeType(SplineEdges))
+
+import Control.Arrow(second)
 
 ------------------------------------------------
 
--- | .
-graphToDot :: (a -> String) -> [(a, [a])] -> Doc
-graphToDot f = ppGraph . fmap (f *** fmap f)
-  where f *** g = \(a, b)->(f a, g b)
+graphToDot :: (Ord a) => [(a, [a])] -> DotGraph a
+graphToDot = graphToDotParams vacuumParams
+
+graphToDotParams :: (Ord a, Ord cl) => GraphvizParams a () () cl l -> [(a, [a])] -> DotGraph a
+graphToDotParams params nes = graphElemsToDot params ns es
+  where
+    ns = map (second $ const ()) nes
+
+    es = concatMap mkEs nes
+    mkEs (f,ts) = map (\t -> (f,t,())) ts
 
 ------------------------------------------------
 
-gStyle :: String
-gStyle = unlines
-  ["  graph [rankdir=LR, splines=true];"
-  ,"  node [label=\"\\N\", shape=none, fontcolor=blue, fontname=courier];"
-  ,"  edge [color=black, style=dotted, fontname=courier, arrowname=onormal];"]
+vacuumParams :: GraphvizParams a () () () ()
+vacuumParams = defaultParams { globalAttributes = gStyle }
 
-ppGraph :: [(String, [String])] -> Doc
-ppGraph xs = (text "digraph g" <+> text "{")
-              $+$ text gStyle
-                $+$ nest indent (vcat . fmap ppEdge $ xs)
-                    $+$ text "}"
-                        where indent = 2
-
-ppEdge :: (String, [String]) -> Doc
-ppEdge (x,xs) = (dQText x) <+> (text "->")
-                    <+> (braces . hcat . punctuate semi
-                        . fmap dQText $ xs)
-
-dQText :: String -> Doc
-dQText = doubleQuotes . text
-
-{-
-import System.Cmd
-import System.Exit
-graphToDotPng :: FilePath -> [(String,[String])] -> IO Bool
-graphToDotPng fpre g = do
-  let [dot,png] = fmap (fpre++) [".dot",".png"]
-  writeFile dot
-    . render . ppGraph
-      -- . fmap (show***fmap show)
-        $ g
-  ((==ExitSuccess) `fmap`) .system . intercalate " " $
-    -- ["cat",dot,"|","dot -Tpng",">",png,"2>/dev/null;","gliv",png,"&"]
-    ["cat",dot,"|","dot -Tpng",">",png,"2>/dev/null;","display",png,"&"]
-
-graphToDotPdf :: FilePath -> [(String,[String])] -> IO Bool
-graphToDotPdf fpre g = do
-  let [dot,png] = fmap (fpre++) [".dot",".pdf"]
-  writeFile dot
-    . render . ppGraph
-      -- . fmap (show***fmap show)
-        $ g
-  ((==ExitSuccess) `fmap`) .system . intercalate " " $
-    -- ["cat",dot,"|","dot -Tpng",">",png,"2>/dev/null;","gliv",png,"&"]
-    ["cat",dot,"tred","|","dot -Tpdf",">",png,"2>/dev/null;","evince",png,"&"]
--}
+gStyle :: [GlobalAttributes]
+gStyle = [ GraphAttrs [RankDir FromLeft, Splines SplineEdges, FontName "courier"]
+         , NodeAttrs  [textLabel "\\N", shape PlainText, fontColor Blue]
+         , EdgeAttrs  [color Black, style dotted]
+         ]
 
 ------------------------------------------------
